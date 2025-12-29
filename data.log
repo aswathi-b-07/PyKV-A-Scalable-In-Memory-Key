@@ -1,0 +1,3 @@
+{"op": "SET", "key": "name", "value": "Aswathi"}
+{"op": "SET", "key": "city", "value": "Chennai"}
+{"op": "DEL", "key": "name"}
