@@ -1,6 +1,7 @@
 import asyncio
 from lru_cache import LRUCache
 from persistence import PersistenceManager
+from replication import replicate
 
 class KeyValueStore:
     def __init__(self, capacity: int = 5):
@@ -8,22 +9,37 @@ class KeyValueStore:
         self.lock = asyncio.Lock()
         self.persistence = PersistenceManager()
 
+    # ✅ THIS IS CALLED ON SERVER START
     async def load_from_disk(self):
         operations = await self.persistence.recover()
+
         for op in operations:
             if op["op"] == "SET":
                 self.cache.put(op["key"], op["value"])
             elif op["op"] == "DEL":
                 self.cache.delete(op["key"])
 
+        print(f"[RECOVERY] Loaded {len(self.cache.keys())} keys from log")
+
     async def set(self, key: str, value: str):
         async with self.lock:
+            # 1️⃣ Write-ahead log
             await self.persistence.append({
                 "op": "SET",
                 "key": key,
                 "value": value
             })
+
+            # 2️⃣ Update memory
             self.cache.put(key, value)
+
+            # 3️⃣ Replication (best effort)
+            replicate({
+                "op": "SET",
+                "key": key,
+                "value": value
+            })
+
             return {"status": "success", "message": f"{key} stored"}
 
     async def get(self, key: str):
@@ -35,11 +51,21 @@ class KeyValueStore:
 
     async def delete(self, key: str):
         async with self.lock:
+            # 1️⃣ Log first
             await self.persistence.append({
                 "op": "DEL",
                 "key": key
             })
+
+            # 2️⃣ Update memory
             self.cache.delete(key)
+
+            # 3️⃣ Replication
+            replicate({
+                "op": "DEL",
+                "key": key
+            })
+
             return {"status": "success", "message": f"{key} deleted"}
 
     async def get_all_keys(self):
@@ -48,5 +74,7 @@ class KeyValueStore:
 
     async def compact_log(self):
         async with self.lock:
+            # Only current LRU state is persisted
             current_state = self.cache.cache
             await self.persistence.compact(current_state)
+            print("[LOG] Compaction completed")
